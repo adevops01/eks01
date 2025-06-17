@@ -1,0 +1,109 @@
+# nginx-dynamic-info.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-dynamic-info
+  labels:
+    app: nginx-dynamic
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nginx-dynamic
+  template:
+    metadata:
+      labels:
+        app: nginx-dynamic
+    spec:
+      # This initContainer runs before the main nginx container.
+      # Its job is to create the index.html file using data from the Downward API.
+      initContainers:
+      - name: install
+        image: busybox:1.36
+        # The command writes an HTML file to the shared volume.
+        # It uses environment variables populated by the Downward API.
+        command:
+        - sh
+        - -c
+        - |
+          echo "<html>" > /work-dir/index.html;
+          echo "<head><title>Nginx Pod Info</title></head>" >> /work-dir/index.html;
+          echo "<body style='font-family: sans-serif; background-color: #111; color: #0f0;'>" >> /work-dir/index.html;
+          echo "<h1>Pod Information</h1>" >> /work-dir/index.html;
+          echo "<pre>" >> /work-dir/index.html;
+          echo "Pod Name   : $POD_NAME" >> /work-dir/index.html;
+          echo "Namespace  : $NAMESPACE" >> /work-dir/index.html;
+          echo "Pod IP     : $POD_IP" >> /work-dir/index.html;
+          echo "Pod UID    : $POD_UID" >> /work-dir/index.html;
+          echo "Node Name  : $NODE_NAME" >> /work-dir/index.html;
+          echo "Node IP    : $NODE_IP" >> /work-dir/index.html;
+          echo "</pre>" >> /work-dir/index.html;
+          echo "</body></html>" >> /work-dir/index.html;
+        # These environment variables are populated by the Downward API,
+        # exposing pod and node metadata directly to the container.
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        # Mount the shared volume where the index.html will be written.
+        volumeMounts:
+        - name: web-content
+          mountPath: /work-dir
+
+      # This is the main nginx container.
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        # It mounts the shared volume at the default nginx web root,
+        # replacing the default index.html with the one we created.
+        volumeMounts:
+        - name: web-content
+          mountPath: /usr/share/nginx/html
+      
+      # This volume is shared between the initContainer and the main nginx container.
+      # It's a temporary directory that exists only for the life of the Pod.
+      volumes:
+      - name: web-content
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  # Expose the service on a static port on each node.
+  type: NodePort
+  selector:
+    # This selector must match the labels of the pods in the Deployment.
+    app: nginx-dynamic
+  ports:
+    - protocol: TCP
+      # Port exposed on the node (randomly assigned from 30000-32767 if not specified)
+      nodePort: 30080
+      # Port exposed inside the cluster
+      port: 80
+      # Port on the pod to forward traffic to
+      targetPort: 80
